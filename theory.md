@@ -1,347 +1,346 @@
-# Theory — Multilingual TTS & Agentic AI
+# Theory — Multilingual TTS & Agentic Voice AI
 
-> This document covers the core concepts behind this project. Written as interview preparation for ML Engineer roles in voice AI (e.g. Siri multilingual).
-
----
-
-## 1. Text-to-Speech: the problem
-
-TTS converts a text string into a natural-sounding waveform. The core challenge is that the mapping is **one-to-many**: the text "read" can be pronounced two ways ("reed" vs "red"), and even a single pronunciation can vary in pitch, speed, and emotion across speakers and contexts. The system must resolve all of this without being told.
-
-There are three sub-problems every TTS system must solve:
-
-1. **Linguistic analysis** — what does this text mean phonetically? (G2P, prosody prediction)
-2. **Acoustic modeling** — what does that phonetic sequence sound like? (mel spectrogram generation)
-3. **Vocoding** — how do we turn a spectrogram into an audio waveform? (neural vocoder)
+> Deep-dive reference for interview prep. Companion to `glossary.md` (quick definitions) and `resources.md` (videos and papers).
 
 ---
 
-## 2. TTS architectures — evolution
+## 1. The three sub-problems every TTS system solves
 
-### 2.1 Tacotron 2 (2018)
+TTS maps text to waveform. This involves three distinct problems:
 
-Tacotron 2 was the first neural TTS system to achieve near-human naturalness on English.
+**Linguistic analysis** — what does this text sound like phonetically?
+- Text normalization: "Dr." → "Doctor", "$42" → "forty-two dollars"
+- G2P (grapheme-to-phoneme): convert characters to phoneme symbols
+- Prosody prediction: which words are stressed? Where do pauses go?
 
-**Architecture:**
-- Encoder: a stack of CNN layers + bidirectional LSTM that encodes the input character sequence into a hidden representation
-- Decoder: an autoregressive LSTM that predicts mel spectrogram frames one at a time, attending to the encoder output at each step
-- Attention: location-sensitive attention — a weighted sum over encoder states, biased toward monotonic left-to-right alignment (critical for TTS, where the text must be read in order)
-- Vocoder: WaveNet (originally), later replaced by WaveRNN or HiFi-GAN for speed
+**Acoustic modeling** — what does that phoneme sequence sound like?
+- Maps phonemes → mel spectrogram (a 2D time-frequency representation)
+- Must model pitch (F0), duration, energy, and speaker identity
 
-**Key insight:** The attention mechanism handles the alignment problem implicitly. The model learns that character "h" in position 3 corresponds to spectrogram frames 8-12, without being told. This is powerful but fragile — attention can collapse (repeat a word) or skip (drop a syllable), especially on long inputs.
-
-**Limitation:** Autoregressive decoding is slow — each frame depends on the previous one, so you cannot parallelize.
-
----
-
-### 2.2 FastSpeech 2 (2020)
-
-FastSpeech 2 replaces autoregressive decoding with a **parallel, non-autoregressive** architecture.
-
-**Architecture:**
-- Feed-Forward Transformer (FFT) blocks encode the phoneme sequence
-- A **duration predictor** explicitly predicts how many spectrogram frames each phoneme should produce
-- Phoneme representations are repeated (length-regulated) to match the predicted duration
-- **Pitch predictor** and **energy predictor** add prosody information at the phoneme level
-- Parallel mel-spectrogram generation — all frames produced in one forward pass
-
-**Key insight:** By making duration, pitch, and energy explicit and predictable, FastSpeech 2 gives you fine-grained control over prosody. You can change the pitch of a single phoneme without re-running the whole model.
-
-**Trade-off:** Quality is slightly lower than the best autoregressive models (less contextual flexibility), but inference is 10-100x faster.
+**Vocoding** — how do we turn a spectrogram into a waveform?
+- Mel spectrogram → time-domain audio
+- Neural vocoders (HiFi-GAN) have replaced all classical approaches
 
 ---
 
-### 2.3 VITS (2021) — Variational Inference with adversarial learning for end-to-end TTS
+## 2. TTS architecture evolution
 
-VITS is the first model to go **end-to-end from text to waveform** in a single model, eliminating the separate vocoder.
+### Tacotron 2 (Google, 2018)
 
-**Architecture:**
-- Posterior encoder: encodes the ground-truth waveform into a latent distribution z
-- Prior encoder: predicts that same latent distribution from the text
-- Flow-based decoder: normalizing flow that maps z to a waveform
-- Discriminator (from GAN training): ensures the waveform sounds real
-- Stochastic duration predictor: samples duration from a distribution rather than predicting a single value — introduces natural rhythm variability
+The first neural TTS system to achieve near-human naturalness on English.
 
-**Key insight:** VITS learns a latent space that captures all acoustic variability (speaker identity, pitch, rhythm) jointly. The flow allows exact likelihood computation, making training stable.
+- Encoder: CNN layers + bidirectional LSTM → encodes character sequence
+- Decoder: autoregressive LSTM → predicts mel frames one at a time
+- Attention: location-sensitive attention aligns decoder to encoder positions
+- Vocoder: WaveNet (original), later HiFi-GAN
 
-**Why it matters:** VITS outperforms Tacotron 2 + WaveGlow in MOS scores while running in real time. It is the architecture behind many open-source voice cloning systems.
+**The alignment problem:** Attention must read text left-to-right. If it drifts — repeating a position (word repetition) or skipping (dropped syllables) — the output is broken. Tacotron 2 uses location-sensitive attention to bias toward monotonic alignment, but it still fails on long inputs.
 
----
-
-### 2.4 SpeechT5 (Microsoft, 2022)
-
-SpeechT5 is a unified pre-trained model for **speech and text**, inspired by T5.
-
-**Architecture:**
-- Shared encoder-decoder Transformer pre-trained on both speech and text
-- For TTS: text tokens → shared encoder → speech decoder → HiFi-GAN vocoder
-- For ASR: mel spectrogram → speech encoder → text decoder
-- Speaker conditioning: an x-vector speaker embedding is injected into the decoder, enabling multi-speaker synthesis
-
-**Key insight:** By pre-training on both modalities simultaneously, SpeechT5 learns a shared representation space. Speech and text tokens live in the same embedding space. This enables cross-modal transfer learning.
-
-**Why it matters for multilingual:** The same pre-trained backbone can be fine-tuned for new languages with minimal data, because the model has already learned general speech-text correspondences.
+**Bottleneck:** autoregressive decoding — frame N depends on frame N-1. Cannot parallelize. Slow.
 
 ---
 
-### 2.5 MMS-TTS (Meta, 2023)
+### FastSpeech 2 (Microsoft, 2020)
 
-Meta's Massively Multilingual Speech project trained VITS-based TTS models for **1107 languages** using data from the New Testament audio bible recordings.
+Replaces attention with an **explicit duration predictor**.
 
-**How they handled 1107 languages:**
-- Language-specific models: a separate VITS model per language (not a single model that speaks all languages)
-- Shared architecture, different weights
-- Common phoneme representation using the International Phonetic Alphabet (IPA)
+- Feed-Forward Transformer blocks encode phonemes
+- Duration predictor: predicts how many mel frames each phoneme needs
+- Length regulator: repeats phoneme representations to match predicted duration
+- Pitch predictor: explicit F0 contour per phoneme
+- Energy predictor: explicit loudness per phoneme
+- All frames generated in parallel → 10–100× faster than Tacotron 2
 
-**Key insight:** The phoneme-based input (IPA) is language-agnostic. The model never sees raw characters — it sees phoneme tokens. This means adding a new language only requires a phonemizer (G2P tool) for that language, not a new architecture.
+**Key insight:** by making duration, pitch, and energy explicit scalar predictions, FastSpeech 2 gives fine-grained prosody control. You can raise the pitch of a single phoneme by overriding its pitch value at inference time.
 
----
-
-### 2.6 Bark (Suno, 2023)
-
-Bark is a GPT-style generative audio model trained on diverse audio data.
-
-**Architecture:**
-- Three-stage language model: semantic tokens → coarse acoustic tokens → fine acoustic tokens
-- Codec: EnCodec (Meta) as the neural audio codec — audio is tokenized into discrete codes
-- No explicit phoneme step — the model learns pronunciation from raw text
-- Supports non-speech sounds: laughter, music, background noise
-
-**Key insight:** By treating audio generation as a language modeling problem over codec tokens, Bark can produce highly natural and expressive speech, including paralinguistic cues. The cost is speed — it is the slowest model here.
+**Trade-off:** quality is slightly lower than the best autoregressive models because there is no step-by-step self-feedback.
 
 ---
 
-## 3. Cross-attention in TTS
+### VITS (Kakao, 2021)
 
-Cross-attention is the mechanism that connects the encoder (text) and decoder (audio) in seq2seq TTS.
+**End-to-end** TTS from text to waveform in a single model — no separate vocoder.
 
-At each decoder timestep t, cross-attention computes:
+Three components trained jointly:
 
-```
-Attention(Q, K, V) = softmax(QKᵀ / √d_k) · V
-```
+1. **Posterior encoder (VAE):** encodes the ground-truth waveform into a latent distribution z
+2. **Prior encoder (normalizing flow):** predicts that same distribution from the text
+3. **Decoder (upsampler):** decodes z to waveform (similar to HiFi-GAN generator)
+4. **GAN discriminator:** ensures the waveform sounds real
 
-Where:
-- **Q** (query) comes from the decoder state at step t — "what am I looking for?"
-- **K, V** (key, value) come from the encoder output — the full text representation
-- The result is a weighted sum of encoder values, biased toward the most relevant text positions
+A **stochastic duration predictor** samples durations from a distribution (not a single value), introducing natural rhythm variability. This is why VITS speech sounds less robotic than FastSpeech 2.
 
-In TTS, the attention should be **monotonically aligned** — the decoder should read the text left-to-right. Tacotron 2 enforces this softly via location-sensitive attention, which biases the attention weights toward positions near the previous attention peak. VITS avoids the problem entirely by using a duration predictor instead.
+**Normalizing flow** maps a simple Gaussian prior (easy to sample from) to a complex acoustic posterior (what the spectrogram actually looks like for this text). The flow is invertible and has exact likelihood — unlike GANs, training is stable.
 
-**Why this matters for multilingual:** Different languages have different text-to-speech alignment characteristics. Languages with complex morphology (e.g. Finnish) or logographic writing (e.g. Chinese) require careful tokenization before the attention mechanism can align correctly.
+**Why it matters for multilingual:** VITS is the backbone of MMS-TTS. Training a new language requires only a VITS checkpoint and a phonemizer for that language. The architecture generalizes.
 
 ---
 
-## 4. G2P — Grapheme-to-Phoneme conversion
+### SpeechT5 (Microsoft, 2022)
 
-G2P converts written text into phoneme sequences. This is the first step in traditional TTS pipelines.
+A unified pre-trained model for **both speech and text**, inspired by T5.
 
-**Why it's hard:**
-- English is notoriously irregular: "read" (present) vs "read" (past), "lead" (verb) vs "lead" (metal)
-- Chinese characters do not encode pronunciation at all — you need a separate dictionary or model
-- Arabic and Hebrew are written without short vowels — the G2P model must infer them from context
+- Pre-trained jointly on speech and text corpora
+- Text tokens and speech tokens share the same encoder-decoder Transformer
+- For TTS: text → shared encoder → speech decoder → HiFi-GAN vocoder
+- Speaker conditioning: x-vector embedding injected into the decoder
 
-**Approaches:**
-- Rule-based: hand-crafted phoneme rules (Festival, eSpeak)
-- Statistical: joint-sequence models trained on pronunciation dictionaries
-- Neural: seq2seq transformers trained on (word, phoneme) pairs (e.g. `charsiu_g2p`)
-- Multilingual: a single model covering many languages using IPA as the output space (used by MMS)
+**Why joint pre-training helps:** the model learns that "dog" in text and the acoustic realization of "dog" in speech are related representations. Fine-tuning for new languages requires less data because of this shared foundation.
+
+**Used in this project** for English — it produces the highest-quality English output among our free models.
+
+---
+
+### MMS-TTS (Meta, 2023)
+
+VITS-based TTS models covering **1107 languages**, trained on New Testament audio recordings.
+
+**How 1107 languages are handled:**
+- Separate model checkpoint per language (same VITS architecture, different weights)
+- IPA phoneme input — script-agnostic. Every language is converted to IPA before the model sees it
+- This means adding a new language requires only a G2P/phonemizer for that language
+- No cross-lingual attention or language ID embedding needed at the model level
+
+**The routing insight (core to this project):** because each language has its own model, the "multilingual" problem becomes a routing problem. Detect the language, select the model, synthesize. Clean separation of concerns.
+
+**Data source:** religious text recordings are far from ideal (narrow prosodic range, formal register), but they were the only consistently multilingual parallel audio source at this scale.
+
+---
+
+### Bark (Suno, 2023)
+
+A GPT-style **generative audio model** that treats speech as a language modeling problem.
+
+Three-stage pipeline (all autoregressive language models):
+1. Text → semantic tokens (high-level content)
+2. Semantic tokens → coarse acoustic tokens (EnCodec codebook 1-2)
+3. Coarse tokens → fine acoustic tokens (EnCodec codebook 3-8)
+
+**Neural codec:** EnCodec (Meta) compresses audio into 8 parallel streams of discrete tokens (residual vector quantization). Bark generates these tokens, then EnCodec decodes them to a waveform.
+
+**What Bark can do that others can't:**
+- Paralinguistic cues: `[laughter]`, `[sighs]`, `[clears throat]`
+- Music and non-speech sounds
+- Expressive, contextually appropriate prosody (not just pitch/energy, but style)
+
+**Cost:** very slow on CPU (RTF ≈ 3–10). Used as an expressive fallback in this project.
+
+---
+
+## 3. Cross-attention vs routing — why we chose routing
+
+**Cross-attention in seq2seq TTS** (like Tacotron 2) lets the decoder attend to all encoder positions at each step. This is powerful but has problems:
+
+- Attention can be non-monotonic (the model can look backward in text), causing repetition
+- Attention alignment is fragile on long inputs
+- A single cross-attention model cannot be multilingual without explicit language conditioning
+
+**Language routing** is the correct design choice when:
+- Each language has meaningfully different phoneme inventories and prosodic rules
+- You have specialist models (MMS) that were trained per-language
+- You want predictable behavior — a Spanish model always produces Spanish-quality speech
+
+The router in this project detects language first, then selects the model. No cross-attention alignment issues, no language confusion, and each model is as good as it can be for its language.
+
+---
+
+## 4. G2P — Grapheme-to-Phoneme
+
+G2P converts written text to phoneme sequences. Complexity varies by language:
+
+| Language | Regularity | Challenge |
+|----------|------------|-----------|
+| Spanish | Very high | Almost fully regular spelling-pronunciation correspondence |
+| German | High | Regular with a few exceptions |
+| English | Low | Highly irregular: "read/read", "bow/bow", proper nouns |
+| French | Medium | Silent letters, liaison rules |
+| Arabic | Low | Short vowels usually omitted in text |
+| Chinese | None | Characters don't encode pronunciation at all — requires dictionary or model |
+| Japanese | Medium | Three scripts (hiragana, katakana, kanji) with different rules |
+
+**MMS approach:** convert all languages to IPA first, using language-specific G2P tools (eSpeak, espeak-ng, language-specific dictionaries). The VITS model then works entirely in IPA space.
 
 ---
 
 ## 5. Neural vocoders
 
-The vocoder converts a mel spectrogram (a compact frequency-domain representation) back into a time-domain waveform.
+The vocoder converts mel spectrogram → waveform.
 
-| Vocoder | Architecture | Speed | Quality |
-|---------|--------------|-------|---------|
-| WaveNet | Dilated causal CNN, autoregressive | Very slow | Excellent |
-| WaveRNN | RNN, autoregressive | Slow | Good |
-| WaveGlow | Normalizing flow | Fast | Good |
-| HiFi-GAN | GAN (generator + discriminators) | Very fast | Excellent |
-| EnCodec | VQ-VAE neural codec | Fast | High (codec artifacts) |
+| Vocoder | Type | RTF (CPU) | Quality |
+|---------|------|-----------|---------|
+| WaveNet | Dilated causal CNN, AR | ~1000× slower than real time | Excellent |
+| WaveRNN | RNN, AR | Slow | Good |
+| WaveGlow | Normalizing flow | ~20× real time | Good |
+| HiFi-GAN | GAN | ~50× faster than real time | Excellent |
+| EnCodec | VQ-VAE codec | Fast | High (with codec artifacts) |
 
-**HiFi-GAN** is the current standard for most open-source TTS. It uses multiple discriminators operating at different frequency resolutions to catch both fine-grained artifacts and coarse prosodic errors.
+**HiFi-GAN** is the current standard. Its discriminators:
+- **Multi-Period Discriminator (MPD):** looks at waveform samples with strides of 2, 3, 5, 7, 11 — catches periodic patterns at different frequencies
+- **Multi-Scale Discriminator (MSD):** looks at the waveform at 3 different resolutions — catches both fine-grained waveform details and coarse spectral structure
 
----
-
-## 6. Speaker embeddings and voice cloning
-
-Speaker embeddings are fixed-dimensional vectors that encode a speaker's vocal identity, extracted from a few seconds of reference audio.
-
-**Common approaches:**
-- **d-vectors**: embeddings from a speaker verification model (GE2E loss)
-- **x-vectors**: TDNN-based speaker embeddings from Kaldi/SpeechBrain
-- **ECAPA-TDNN**: state-of-the-art speaker embeddings used in modern TTS
-
-**Voice cloning workflow:**
-1. Extract speaker embedding from 3-30 seconds of reference audio
-2. Inject the embedding into the TTS decoder (concatenated to every decoder input, or as a conditioning vector via FiLM layers)
-3. Generate speech in that speaker's voice for arbitrary text
-
-**Zero-shot vs few-shot cloning:**
-- Zero-shot: clone from a single reference clip, no fine-tuning (e.g. VALL-E, StyleTTS2)
-- Few-shot: fine-tune the TTS model on 10-100 utterances from the target speaker
+Together they ensure the generated waveform is realistic at every time scale.
 
 ---
 
-## 7. Multilingual TTS challenges
+## 6. Speaker embeddings
 
-### 7.1 Phoneme inventory coverage
+Speaker embeddings encode a speaker's vocal identity (timbre, accent, speaking style) in a fixed-dimensional vector.
 
-Every language has a different set of phonemes. English has ~44 phonemes, Mandarin has ~21 consonants + 5 tones, Swahili is largely phonetically regular. A multilingual TTS model must either:
+**Extraction:** a neural speaker verification model trained with a loss that pushes same-speaker embeddings together and different-speaker embeddings apart (GE2E, ArcFace, etc.).
 
-- Use a universal phoneme set (IPA) and train one model per language
-- Use a language-agnostic token space and train a single model that generalizes
+**Conditioning in TTS:** the embedding is injected into the decoder at every step — either concatenated to the input or via FiLM (feature-wise linear modulation: scale and shift the layer activations using the embedding).
 
-### 7.2 Prosody variation
+**Zero-shot voice cloning:** extract speaker embedding from 3–30 seconds of reference audio, inject it into a multi-speaker TTS model. No fine-tuning. Output sounds like the reference speaker saying arbitrary text.
 
-Prosody (rhythm, pitch, stress) differs dramatically across languages:
-- English is **stress-timed**: stressed syllables occur at roughly equal intervals
-- French is **syllable-timed**: all syllables have roughly equal duration
-- Mandarin is **tonal**: pitch encodes lexical meaning (four tones + neutral)
-
-A model trained only on English will have wrong prosodic assumptions when generating other languages.
-
-### 7.3 Code-switching
-
-Code-switching occurs when a speaker switches languages mid-sentence. This is common in multilingual communities (e.g. Spanglish). Production voice assistants must detect code-switches and handle them gracefully — either by using a code-switch-aware model or by detecting the switch and routing to a different TTS engine.
-
-### 7.4 Script diversity
-
-Languages use different writing systems:
-- Latin script (English, Spanish, French, Swahili)
-- CJK (Chinese, Japanese, Korean) — require word segmentation before G2P
-- Arabic/Hebrew — right-to-left, short vowels usually omitted
-- Devanagari (Hindi, Sanskrit) — syllabic (akshara) units, not alphabetic
-
-The tokenizer and G2P module must handle each script correctly before the TTS model ever sees the input.
+**Limitation:** the cloned voice has the reference speaker's timbre but the model's prosody patterns. Emotional range and style transfer are still active research areas.
 
 ---
 
-## 8. TTS evaluation — MOS and beyond
+## 7. Multilingual challenges
 
-**Mean Opinion Score (MOS):** Listeners rate audio naturalness on a 1-5 scale. Scores above 4.0 are considered near-human. MOS is subjective and expensive to collect.
+### Phoneme inventory
 
-**Automatic metrics:**
-- **WER (Word Error Rate):** Run ASR on the generated audio and compare to the input text. Measures intelligibility.
-- **Mel Cepstral Distortion (MCD):** L2 distance in mel cepstrum space. Measures acoustic similarity to ground truth.
-- **UTMOS:** An automatic MOS predictor trained on human ratings (neural proxy for MOS).
-- **Speaker similarity cosine distance:** Compare speaker embeddings of generated vs reference audio.
+Every language has a different phoneme set. English ~44, Mandarin ~21 consonants + 4 tones, Hawaiian ~13. A multilingual TTS model using a shared phoneme space must either:
+- Use a universal set (IPA — all languages' phonemes represented)
+- Use language-specific sets with language conditioning
+
+MMS uses IPA per language. SpeechT5 uses character-level input for English.
+
+### Prosody typology
+
+**Stress-timed:** English, German, Dutch. Stressed syllables at roughly equal intervals. Unstressed syllables compressed.
+
+**Syllable-timed:** French, Spanish, Italian. All syllables roughly equal duration.
+
+**Mora-timed:** Japanese. The mora (not syllable) is the timing unit.
+
+**Tonal:** Mandarin (4 tones), Cantonese (6 tones), Thai (5 tones), Vietnamese (6 tones). Pitch encodes lexical meaning — the TTS model must produce the correct F0 contour per syllable.
+
+A model trained only on English will impose English rhythm on other languages, producing unnatural-sounding output.
+
+### Code-switching
+
+Code-switching is the alternation between languages within a conversation or sentence. Hard for TTS because:
+- The language detector must identify the switch boundary
+- A different TTS model must be selected mid-utterance
+- Prosody must transition naturally across the language boundary
+
+Production handling: run a sliding-window language detector, flush the current TTS buffer at the switch point, re-instantiate with the new language model.
+
+---
+
+## 8. Whisper — ASR and language detection
+
+**Architecture:**
+- Audio → 80-channel mel spectrogram (30-second chunks)
+- CNN frontend extracts local features
+- Transformer encoder produces audio representations
+- Transformer decoder generates text autoregressively
+- Special tokens control task: `<|en|>` (language), `<|transcribe|>` (task), `<|notimestamps|>`
+
+**Language detection mechanism:** the first token the decoder predicts is the language ID token (e.g. `<|es|>` for Spanish). This is trained discriminatively — Whisper sees labeled (audio, language) pairs. Language detection accuracy is high for languages with substantial training data (~98% for major European languages) and lower for rare languages.
+
+**Why this matters for this project:** Whisper gives us both the transcription and the language code in a single forward pass. We feed the language code to the TTS router directly — no separate language identification model needed.
 
 ---
 
 ## 9. Agentic AI fundamentals
 
-### 9.1 What makes an AI "agentic"?
+### ReAct pattern
 
-An agent is an AI system that:
-- Has **goals** (not just inputs/outputs)
-- Takes **actions** that affect the world (tool calls, API requests)
-- Observes **feedback** from those actions
-- **Plans** over multiple steps
-
-A simple chatbot answers one question. An agent can search the web, read a document, compute something, and compose a multi-step answer — choosing its own path.
-
-### 9.2 ReAct (Reason + Act)
-
-ReAct is the most common agentic pattern. The model alternates between:
+ReAct (Reason + Act, Yao et al. 2022) structures agent behavior as an alternating sequence:
 
 ```
-Thought: I need to find the current weather in Madrid.
-Action: web_search("Madrid weather today")
-Observation: Madrid is 22°C and sunny.
-Thought: I have the answer. I'll respond in Spanish since the user asked in Spanish.
-Action: tts_speak("Hoy en Madrid hace 22 grados y está soleado.", lang="es")
+Thought: I need to find current weather in Madrid.
+Action: web_search
+Action Input: Madrid weather today
+Observation: 22°C, sunny skies.
+Thought: I have enough to answer. The user asked in Spanish, so I'll respond in Spanish.
+Final Answer: Hoy en Madrid hace 22 grados y el cielo está despejado.
 ```
 
-Each cycle produces a thought (internal reasoning), an action (tool call), and an observation (tool result). This loop continues until the agent decides it has a final answer.
+Each thought-action-observation cycle is one step. The agent terminates when it produces a "Final Answer".
 
-**Why it works:** Forcing the model to articulate its reasoning before acting reduces errors and makes the agent's behavior inspectable and debuggable.
+**Why it works:** forcing the model to write its reasoning before acting reduces errors (the model "thinks before acting") and produces an inspectable decision trace.
 
-### 9.3 Tool use
+### Tool design
 
-Tools are functions the agent can call. In LangChain they are defined with:
-- A name (used in the prompt)
-- A description (tells the LLM when to use it)
-- A schema (defines input parameters)
-- An implementation (Python function)
+A good tool has:
+- A precise, unambiguous name
+- A description that tells the LLM *when* to use it (not just what it does)
+- A simple string → string interface (no complex schemas)
+- Graceful error handling (returns an error string, not an exception)
 
-In this project, tools include:
-- `web_search(query)` — DuckDuckGo
-- `retrieve_memory(query)` — FAISS semantic search over past turns
-- `detect_language(text)` — returns an ISO 639-1 language code
-- `speak(text, lang)` — routes to the appropriate TTS model
+### Memory taxonomy
 
-### 9.4 Memory types in agents
+| Type | What it stores | Where |
+|------|----------------|-------|
+| Working | Current conversation | Context window |
+| Episodic | Past interactions, retrieved by similarity | FAISS + embeddings |
+| Semantic | World knowledge | LLM weights |
+| Procedural | How to use tools | Tool definitions in system prompt |
 
-| Type | Description | Implementation |
-|------|-------------|----------------|
-| In-context | Everything in the current prompt window | Python list of messages |
-| Episodic | Past turns retrieved by semantic similarity | FAISS + sentence-transformers |
-| Semantic | General world knowledge | Pretrained LLM weights |
-| Procedural | How to use tools | Tool definitions in the prompt |
+### Latency budget for voice agents
 
-For a voice assistant, episodic memory is the most important: "you asked about the weather in Madrid three turns ago" should inform how the agent answers "what about tomorrow?"
+Target: < 2 seconds from end of user speech to start of agent speech.
 
-### 9.5 Why agentic + TTS is hard
+| Component | Typical latency |
+|-----------|----------------|
+| Whisper ASR (base, CPU) | 200–500ms |
+| LLM first token (API) | 300–800ms |
+| LLM full response | 500–2000ms |
+| TTS (SpeechT5, CPU) | 200–500ms |
+| TTS (MMS, CPU) | 200–500ms |
+| TTS (Bark, CPU) | 5–20 seconds |
 
-When TTS is the output modality of an agentic system, several new challenges appear:
-
-1. **Latency**: the agent must think AND generate audio. Each adds hundreds of milliseconds.
-2. **Error recovery**: if the agent generates wrong information and speaks it, the user cannot "skim" past it — they have to listen.
-3. **Prosody and intent**: the TTS model must know *how* to say something, not just *what* to say. An error message should sound different from an excited answer.
-4. **Streaming**: production systems start speaking before the full response is generated. This requires chunk-wise TTS with sentence-level flushing.
+**Streaming TTS** is required to hit the budget: flush the first sentence to TTS as soon as the LLM generates it, start playing audio, generate the rest of the response concurrently.
 
 ---
 
-## 10. Whisper — multilingual ASR
+## 10. TTS evaluation
 
-Whisper (OpenAI, 2022) is a seq2seq Transformer trained on 680,000 hours of weakly supervised audio data from the internet.
+**Mean Opinion Score (MOS):** humans rate naturalness 1–5. MOS ≥ 4.0 is near-human. Expensive.
 
-**Architecture:**
-- Encoder: CNN frontend (converts 30s mel spectrogram chunks to feature maps) + Transformer encoder
-- Decoder: autoregressive Transformer decoder that generates text tokens
-- Special tokens: `<|en|>`, `<|es|>`, `<|transcribe|>`, `<|translate|>` — the decoder is told what task to perform via prompt tokens
+**UTMOS:** neural MOS predictor trained on human ratings. Cheap proxy.
 
-**Key features:**
-- Transcribes in the source language or translates to English
-- Language identification as a side effect of the first decoder step
-- Robust to noise, accents, and non-native speakers
-- Works out of the box for 99 languages
+**WER intelligibility test:** run Whisper on the TTS output, compute WER against the input text. Measures whether the synthesized speech is understandable. WER > 5% indicates synthesis errors.
 
-**Why this matters here:** Whisper gives us both the transcription *and* the detected language code in a single pass. We feed that language code directly to the TTS router to ensure the agent responds in the same language the user spoke in.
+**MCD (Mel Cepstral Distortion):** L2 distance in mel cepstrum space vs ground truth. Correlates imperfectly with perceived quality.
+
+**RTF (Real-Time Factor):** RTF = synthesis time / audio duration. RTF < 1.0 required for production. HiFi-GAN: RTF ≈ 0.01. Bark: RTF ≈ 3–10 on CPU.
+
+**Speaker similarity:** cosine similarity between ECAPA-TDNN embeddings of synthesized vs reference audio. Used for voice cloning evaluation.
 
 ---
 
-## 11. FAISS — vector similarity search
+## 11. Questions to be ready to answer cold
 
-FAISS (Facebook AI Similarity Search) is a library for efficient nearest-neighbor search in high-dimensional vector spaces.
+**TTS architecture**
+- Walk me through Tacotron 2 step by step.
+- Why did FastSpeech replace attention with a duration predictor?
+- What is a normalizing flow? Why is it used in VITS?
+- What do HiFi-GAN's MPD and MSD discriminators each catch?
+- What does it mean for TTS to be "end-to-end"?
 
-In this project, we use it to implement **episodic memory**:
+**Multilingual**
+- How does MMS handle 1107 languages with one architecture? (Separate VITS checkpoints per language, IPA input)
+- What is G2P and why is Chinese harder than Spanish?
+- What is code-switching and how would you handle it in a voice assistant?
+- What is the difference between stress-timed and syllable-timed prosody?
 
-1. Each Q&A turn is encoded into a 384-dimensional embedding (via `sentence-transformers/all-MiniLM-L6-v2`)
-2. Embeddings are stored in a FAISS flat L2 index
-3. On a new query, the query is embedded and the k=3 most similar past turns are retrieved
-4. Those past turns are injected into the agent's context window
+**Speaker and voice**
+- What is a speaker embedding? How is it injected into a TTS model?
+- What is zero-shot voice cloning?
 
-This is a lightweight RAG (Retrieval-Augmented Generation) setup without a database.
+**ASR**
+- How does Whisper detect the language of the input? (First decoder token is the language ID token)
+- What are Whisper's known failure modes?
 
----
+**Agentic AI**
+- Describe the ReAct loop. Draw the Thought/Action/Observation cycle.
+- What is RAG? How does FAISS fit in?
+- What are the latency bottlenecks in a voice agent, and how do you mitigate them?
 
-## 12. Concepts to know cold for the interview
-
-- What is the difference between mel spectrogram, MFCC, and raw waveform as audio representations?
-- How does attention alignment work in Tacotron 2, and why does it sometimes fail?
-- Why is FastSpeech 2 faster than Tacotron 2? What does it trade off?
-- What is a normalizing flow and why is it used in VITS?
-- What is an x-vector / speaker embedding, and how is it used for multi-speaker TTS?
-- How does Whisper detect the language of the input?
-- What is the ReAct pattern? Draw the thought/action/observation loop.
-- What is FAISS and what is its role in RAG systems?
-- What is MOS and what are its limitations as a TTS evaluation metric?
-- What is code-switching and why is it hard for TTS systems?
-- What is G2P, and why is it more complex for Chinese than for Spanish?
-- What is HiFi-GAN, and what do its multiple discriminators each catch?
-- What is the difference between zero-shot and few-shot voice cloning?
-- What are the main latency bottlenecks in a voice agent system?
+**System design**
+- Design a voice assistant that supports 10 languages with a 2-second latency target.
+- How would you evaluate TTS quality at scale without human annotators?

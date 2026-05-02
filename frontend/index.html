@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VoiceAgent — Multilingual TTS Demo</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #0f0f13;
+      color: #e8e6e0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem 1rem;
+    }
+    h1 { font-size: 1.6rem; font-weight: 500; margin-bottom: 0.4rem; }
+    .subtitle { color: #888; font-size: 0.9rem; margin-bottom: 2rem; }
+
+    .card {
+      background: #1a1a22;
+      border: 1px solid #2a2a38;
+      border-radius: 12px;
+      padding: 1.5rem;
+      width: 100%;
+      max-width: 640px;
+      margin-bottom: 1rem;
+    }
+
+    label { font-size: 0.8rem; color: #888; display: block; margin-bottom: 0.4rem; }
+
+    textarea {
+      width: 100%;
+      background: #0f0f13;
+      border: 1px solid #2a2a38;
+      border-radius: 8px;
+      color: #e8e6e0;
+      font-size: 1rem;
+      padding: 0.75rem;
+      resize: vertical;
+      min-height: 90px;
+    }
+    textarea:focus { outline: none; border-color: #5a4de6; }
+
+    select {
+      background: #0f0f13;
+      border: 1px solid #2a2a38;
+      border-radius: 8px;
+      color: #e8e6e0;
+      font-size: 0.9rem;
+      padding: 0.5rem 0.75rem;
+      margin-top: 0.75rem;
+      width: 100%;
+    }
+
+    button {
+      margin-top: 1rem;
+      width: 100%;
+      padding: 0.75rem;
+      border: none;
+      border-radius: 8px;
+      background: #5a4de6;
+      color: #fff;
+      font-size: 1rem;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    button:hover { background: #7060f0; }
+    button:disabled { background: #333; color: #666; cursor: not-allowed; }
+
+    .status {
+      font-size: 0.85rem;
+      color: #888;
+      margin-top: 0.75rem;
+      min-height: 1.2rem;
+    }
+    .status.error { color: #e06060; }
+    .status.ok { color: #60c060; }
+
+    audio { width: 100%; margin-top: 0.75rem; border-radius: 8px; }
+
+    .history { width: 100%; max-width: 640px; }
+    .turn {
+      background: #1a1a22;
+      border: 1px solid #2a2a38;
+      border-radius: 10px;
+      padding: 1rem;
+      margin-bottom: 0.75rem;
+    }
+    .turn-lang { font-size: 0.75rem; color: #666; margin-bottom: 0.3rem; }
+    .turn-text { font-size: 0.95rem; line-height: 1.5; }
+
+    footer { margin-top: 3rem; font-size: 0.75rem; color: #444; }
+    a { color: #7060f0; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <h1>🎙️ VoiceAgent</h1>
+  <p class="subtitle">Multilingual TTS — SpeechT5 · MMS · Bark</p>
+
+  <div class="card">
+    <label for="text-input">Text to synthesize</label>
+    <textarea id="text-input" placeholder="Type anything… in any language.">Hello! I am a multilingual voice assistant powered by pretrained Hugging Face models.</textarea>
+
+    <label for="lang-select" style="margin-top:1rem;">Language (auto-detect if blank)</label>
+    <select id="lang-select">
+      <option value="">Auto-detect</option>
+      <option value="en" selected>English (SpeechT5)</option>
+      <option value="es">Español (MMS)</option>
+      <option value="fr">Français (MMS)</option>
+      <option value="de">Deutsch (MMS)</option>
+      <option value="zh">中文 (MMS)</option>
+      <option value="ja">日本語 (MMS)</option>
+      <option value="hi">हिंदी (MMS)</option>
+      <option value="ar">العربية (MMS)</option>
+      <option value="sw">Kiswahili (MMS)</option>
+      <option value="yo">Yorùbá (MMS)</option>
+    </select>
+
+    <button id="speak-btn" onclick="synthesize()">▶ Speak</button>
+    <div class="status" id="status"></div>
+    <audio id="audio-player" controls style="display:none;"></audio>
+  </div>
+
+  <div class="history" id="history"></div>
+
+  <footer>
+    Backend: <a href="/docs">FastAPI docs</a> · 
+    Models: SpeechT5, MMS-TTS, Bark (Hugging Face) · 
+    <a href="https://github.com/YOUR_USERNAME/voiceagent" target="_blank">GitHub</a>
+  </footer>
+
+  <script>
+    const API = '';  // empty = same origin; set to 'http://localhost:8000' for local dev
+
+    async function synthesize() {
+      const text = document.getElementById('text-input').value.trim();
+      const lang = document.getElementById('lang-select').value;
+      const btn = document.getElementById('speak-btn');
+      const status = document.getElementById('status');
+      const player = document.getElementById('audio-player');
+
+      if (!text) { setStatus('Please enter some text.', 'error'); return; }
+
+      btn.disabled = true;
+      setStatus('Synthesizing…');
+
+      const form = new FormData();
+      form.append('text', text);
+      if (lang) form.append('lang', lang);
+
+      try {
+        const res = await fetch(`${API}/chat`, { method: 'POST', body: form });
+        if (!res.ok) throw new Error(`Server error ${res.status}`);
+        const data = await res.json();
+
+        // Play audio
+        const wav = Uint8Array.from(atob(data.audio_base64), c => c.charCodeAt(0));
+        const blob = new Blob([wav], { type: 'audio/wav' });
+        player.src = URL.createObjectURL(blob);
+        player.style.display = 'block';
+        player.play();
+
+        setStatus(`✓ Synthesized in ${data.language.toUpperCase()}`, 'ok');
+        addToHistory(data.text, data.language);
+
+      } catch (e) {
+        setStatus('Error: ' + e.message, 'error');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    function setStatus(msg, cls = '') {
+      const el = document.getElementById('status');
+      el.textContent = msg;
+      el.className = 'status ' + cls;
+    }
+
+    function addToHistory(text, lang) {
+      const h = document.getElementById('history');
+      const div = document.createElement('div');
+      div.className = 'turn';
+      div.innerHTML = `<div class="turn-lang">${lang.toUpperCase()} · ${new Date().toLocaleTimeString()}</div>
+                       <div class="turn-text">${text}</div>`;
+      h.prepend(div);
+    }
+
+    // Allow Ctrl+Enter to submit
+    document.getElementById('text-input').addEventListener('keydown', e => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) synthesize();
+    });
+  </script>
+</body>
+</html>
