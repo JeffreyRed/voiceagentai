@@ -123,6 +123,7 @@ voiceagent/
 conda env create -f environment.yml
 conda activate voiceagent
 
+pip installe -e #verify the setup.py is in the directory root.
 # 2. Test English TTS (downloads ~500MB of models on first run)
 python demos/demo_en.py
 
