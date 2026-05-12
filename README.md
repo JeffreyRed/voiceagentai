@@ -293,3 +293,66 @@ Using pretrained models gives us:
 - 1100+ languages (via MMS) that would be impossible to train independently
 
 For production systems like Siri, models are trained from scratch on proprietary data. For a portfolio project demonstrating understanding of the architecture and pipeline, pretrained models are the correct choice — they let you focus on the system design and integration rather than the training infrastructure.
+
+---
+
+## Models explained — what each one actually does
+
+### SpeechT5 (`microsoft/speecht5_tts`)
+A transformer trained jointly on speech and text by Microsoft. For TTS it takes text tokens + a speaker embedding and produces a mel spectrogram. HiFi-GAN then converts that spectrogram to a waveform. Think of SpeechT5 as "the brain that knows how English should sound" and HiFi-GAN as "the mouth that actually produces the audio."
+
+### MMS-TTS (`facebook/mms-tts-{lang}`)
+Meta trained a separate VITS model for each of 1100+ languages using bible recordings. VITS is end-to-end — it goes straight from phonemes to waveform with no separate vocoder. Each language is its own model file. We route to the right one based on the detected language code.
+
+### Bark (`suno/bark-small`)
+A GPT-style model that generates audio token by token, like a language model generates words. It can produce laughter, sighs, and expressive speech — but it's very slow on CPU. Used as fallback for languages MMS doesn't cover.
+
+### Whisper (`openai/whisper-base`)
+A seq2seq transformer trained on 680k hours of audio. Takes a mel spectrogram and outputs text. Crucially it also outputs a language ID token as its first prediction — so we get transcription and language detection in one shot.
+
+### all-MiniLM-L6-v2 (`sentence-transformers`)
+A small transformer that converts any sentence into a 384-dimensional vector. Used for the FAISS memory — semantically similar sentences end up close together in that vector space, so we can retrieve relevant past conversation turns.
+
+---
+
+## Key concepts
+
+### Speaker embeddings — what they are
+
+A speaker embedding is a fixed-size numerical vector (512 numbers in our case) that captures a person's vocal identity — their timbre, resonance, accent, and speaking style — compressed from a recording of their voice.
+
+Think of it like a fingerprint for a voice. Two recordings of the same person produce very similar vectors. Two different people produce very different vectors. The x-vector model (SpeechBrain) was trained specifically to make same-speaker vectors similar and different-speaker vectors far apart.
+
+In TTS we use it as a conditioning signal — we inject it into the decoder at every step saying "produce speech that sounds like this person." Without it, the model has no idea whose voice to use. With a bad one (like silence), it produces noise. With a real one from a real speaker recording, it produces that speaker's voice.
+
+In voice cloning, you record 5–30 seconds of a target speaker, extract their embedding, and inject it. The model speaks any text in that person's voice.
+
+### Sentence embeddings — what they are
+
+A sentence embedding is a fixed-size vector (384 numbers) that represents the **meaning** of a sentence, not just its words. Produced by `all-MiniLM-L6-v2`.
+
+The key property: semantically similar sentences are geometrically close. So "What is the weather like?" and "How's the temperature outside?" end up near each other in the 384-dimensional space, even though they share no words.
+
+We use this for the agent's episodic memory. Every Q&A turn gets embedded and stored in FAISS. When a new question comes in, we embed it, search for the nearest past turns, and inject them into the prompt. This gives the agent conversational memory without a database.
+
+> **Speaker embedding vs sentence embedding:** same word, completely different things. Speaker embedding = who is speaking (512-dim, voice identity, from audio). Sentence embedding = what was said and what it means (384-dim, semantic meaning, from text). Different models, different dimensions, different purposes.
+
+---
+
+## Planned next steps
+
+### A — Voice input (speak → transcribe → respond)
+Add a record button to the frontend using the browser's `MediaRecorder` API. It captures audio, sends the WAV to `POST /transcribe` (already built), gets back text + detected language, then automatically sends that to `POST /chat` for the TTS response. The whole pipeline becomes fully voice-to-voice. No new models needed — Whisper already handles transcription and language detection.
+
+### B — Translation mode
+Three options, increasing complexity:
+
+- **Whisper translate mode** — one parameter change: `task="translate"` makes Whisper transcribe AND translate to English in one step. A Spanish speaker gets an English text response.
+- **Cross-lingual response** — user speaks Spanish, agent responds in Spanish. Already mostly working: Whisper detects the language, router picks MMS-Spanish. Missing piece: LLM instructed via system prompt to respond in the detected language.
+- **Explicit translation tool** — add a `translate(text, source, target)` tool to the agent using Helsinki-NLP OPUS-MT models (free, HuggingFace, 1000+ language pairs). Agent translates on demand as part of its reasoning loop.
+
+### C — Streaming TTS (lower latency)
+Split LLM output on sentence boundaries (`.?!`), send each sentence to TTS immediately, play chunks as they arrive. Cuts perceived latency from 3–5 seconds to under 1 second — much closer to how production voice assistants like Siri work.
+
+### D — Voice cloning demo
+Let the user upload a 10-second WAV of any voice, extract the speaker embedding with SpeechBrain, inject it into SpeechT5, and synthesize in that voice. Type any text, hear it in the uploaded speaker's voice. Directly demonstrates understanding of speaker embeddings — highly relevant to Siri's voice personalization features.
