@@ -123,7 +123,6 @@ voiceagent/
 conda env create -f environment.yml
 conda activate voiceagent
 
-pip installe -e #verify the setup.py is in the directory root.
 # 2. Test English TTS (downloads ~500MB of models on first run)
 python demos/demo_en.py
 
@@ -181,3 +180,116 @@ See `theory.md` for deep dives and `glossary.md` for quick definitions:
 ---
 
 *Built as portfolio work for ML Engineer (voice AI / multilingual NLP) roles.*
+
+---
+
+## How the pipeline works — step by step
+
+This section explains exactly what happens when you run `python demos/demo_en.py`, and why each decision was made.
+
+---
+
+### Step 1 — Download the pretrained model
+
+```python
+SpeechT5Processor.from_pretrained("microsoft/speecht5_tts")
+SpeechT5ForTextToSpeech.from_pretrained("microsoft/speecht5_tts")
+SpeechT5HifiGan.from_pretrained("microsoft/speecht5_hifigan")
+```
+
+We do not train anything. We download weights that Microsoft already trained on hundreds of hours of English speech. `from_pretrained()` pulls the model from Hugging Face Hub and caches it locally in `~/.cache/huggingface/`. Next run it loads from disk instantly.
+
+Three components are downloaded:
+- **Processor** — tokenizes text into input IDs (character tokens)
+- **SpeechT5ForTextToSpeech** — the acoustic model, maps tokens → mel spectrogram
+- **SpeechT5HifiGan** — the vocoder, maps mel spectrogram → waveform
+
+---
+
+### Step 2 — Load the speaker embedding
+
+```python
+table = pq.read_table(...)          # parquet file from HuggingFace datasets
+xvector = table["xvector"][7306]    # row 7306 = BDL (US male)
+embedding = torch.tensor(xvector).unsqueeze(0)  # shape (1, 512)
+```
+
+**Why do we need a speaker embedding?**
+
+SpeechT5 is a *multi-speaker* model — it was trained on many different voices. Without telling it which voice to use, it has no default. The speaker embedding is a 512-dimensional vector that encodes one speaker's vocal identity (their timbre, accent, speaking style). It was extracted from real audio recordings using a speaker verification model (SpeechBrain's x-vector model).
+
+**Why row 7306?**
+
+The CMU ARCTIC dataset has 7,931 recordings across 7 speakers. Row 7306 happens to be a BDL (US male) utterance. Any row from the same speaker would give a similar voice. We pick one and reuse it for all synthesis — that gives us a consistent voice identity.
+
+**Why a 512-dimensional vector?**
+
+The x-vector model compresses a variable-length audio recording into a fixed 512-dimensional vector. This means you can describe any speaker's voice in the same compact format, regardless of how long their reference audio is. The TTS decoder uses this vector to condition every step of speech generation.
+
+**What happened when we used a silent dummy embedding?**
+
+Silence has no vocal identity — the x-vector model extracts noise. The decoder receives a meaningless conditioning signal and produces garbled, robotic output. This is why the first attempt sounded bad: the architecture was correct, the input was wrong.
+
+---
+
+### Step 3 — Language detection and model routing
+
+```python
+# In TTSRouter
+if lang == "en":
+    return SpeechT5TTS()          # best English quality
+elif lang in MMS_SUPPORTED:
+    return MMSTTS(lang=lang)      # facebook/mms-tts-{lang}
+else:
+    return BarkTTS()              # expressive fallback
+```
+
+**Why not one model for all languages?**
+
+Every language has a different phoneme inventory, prosody system, and writing script. A model trained only on English has learned English phoneme distributions — it cannot produce a Spanish trill /r/ or a Mandarin tone correctly because it never saw those patterns during training.
+
+Meta's MMS project solved this by training a separate VITS model per language using IPA (International Phonetic Alphabet) as the input. IPA is a universal phoneme notation — it represents sounds, not letters. So each language is first converted to IPA (via a G2P tool), then synthesized by its specialist model.
+
+**The routing is the multilingual system.** There is no cross-attention between languages, no polyglot decoder, no language embedding. Just: detect language → select the specialist → synthesize. Clean, modular, and each model is as good as it can be for its language.
+
+**How language detection works:**
+- For text input: `langdetect` library (Google's language detection algorithm)
+- For audio input: Whisper ASR — the first decoder token it predicts is a language ID token (e.g. `<|es|>` for Spanish), so we get transcription and language in one forward pass
+
+---
+
+### Step 4 — Synthesis
+
+```python
+inputs = processor(text=text, return_tensors="pt")
+speech = model.generate_speech(
+    inputs["input_ids"],      # tokenized text
+    speaker_embedding,         # who is speaking
+    vocoder=vocoder,           # waveform generator
+)
+```
+
+The model:
+1. Encodes the text tokens into a hidden representation
+2. Autoregressively decodes mel spectrogram frames, conditioning on the speaker embedding at each step
+3. Passes the mel spectrogram through HiFi-GAN to produce a waveform
+
+Output is a float32 numpy array at 16,000 Hz. We write it to a WAV file with `soundfile`.
+
+---
+
+### Why pretrained models and not training from scratch?
+
+Training a TTS model from scratch requires:
+- 20–100+ hours of clean, single-speaker audio with transcripts
+- A GPU with 16–40GB VRAM
+- Days to weeks of training time
+- Expert knowledge of loss functions, learning rate schedules, and evaluation
+
+Using pretrained models gives us:
+- State-of-the-art quality immediately
+- No data collection
+- CPU-compatible inference
+- 1100+ languages (via MMS) that would be impossible to train independently
+
+For production systems like Siri, models are trained from scratch on proprietary data. For a portfolio project demonstrating understanding of the architecture and pipeline, pretrained models are the correct choice — they let you focus on the system design and integration rather than the training infrastructure.

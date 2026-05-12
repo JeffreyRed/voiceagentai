@@ -1,6 +1,5 @@
 name: voiceagent
 channels:
-  - pytorch
   - conda-forge
   - defaults
 
@@ -11,12 +10,11 @@ dependencies:
   - scipy
   - conda-forge::libsndfile       # required by soundfile on Linux/Mac
 
-  # PyTorch — CPU build (swap for pytorch-cuda=12.1 if you have a GPU)
-  - pytorch::pytorch=2.2
-  - pytorch::torchaudio=2.2
-  - pytorch::cpuonly
-
   - pip:
+    # PyTorch — CPU build (swap cpu for cu121 if you have a GPU)
+    - torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+    - torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+
     # Hugging Face stack
     - transformers>=4.38.0
     - datasets>=2.18.0
@@ -26,7 +24,7 @@ dependencies:
     # TTS / Audio
     - soundfile>=0.12.1
     - librosa>=0.10.1
-    - speechbrain>=0.5.16         # ECAPA-TDNN speaker embeddings
+    - speechbrain>=0.5.16
 
     # ASR
     - openai-whisper>=20231117
@@ -46,24 +44,22 @@ dependencies:
     # Web demo (FastAPI backend)
     - fastapi>=0.110.0
     - uvicorn>=0.27.0
-    - python-multipart>=0.0.9     # for audio file uploads
+    - python-multipart>=0.0.9
 
     # Dev / testing
     - pytest>=8.0.0
     - black>=24.0.0
-    - httpx>=0.27.0               # async test client for FastAPI
+    - httpx>=0.27.0
 
 # ─── Setup instructions ───────────────────────────────────────────
 # conda env create -f environment.yml
 # conda activate voiceagent
+# pip install -e .                ← run once after creating the env
 #
 # Verify:
-#   python -c "import torch; print(torch.__version__)"
-#   python -c "import transformers; print(transformers.__version__)"
-#
-# To update after adding deps:
-#   conda env update -f environment.yml --prune
+#   python -c "import torch; print(torch.__version__)"   # should print 2.6.0
 #
 # GPU build (NVIDIA, CUDA 12.1):
-#   Replace cpuonly line with:  pytorch-cuda=12.1
-#   And change pytorch channel to: pytorch
+#   Replace the torch lines with:
+#   - torch==2.6.0 --index-url https://download.pytorch.org/whl/cu121
+#   - torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu121
